@@ -7,7 +7,8 @@ import json
 @click.option("--addr", default="tcp://localhost:5555", help="Server to connect to")
 @click.option("--name", help="Name of the task", required=True)
 @click.option("--cmd", help="Cmd of the task", required=True)
-def main(addr, name, cmd):
+@click.option("--resource", help="Resource required", required=False)
+def main(addr, name, cmd, resource):
     context = zmq.Context()
 
     socket = context.socket(zmq.REQ)
@@ -15,8 +16,14 @@ def main(addr, name, cmd):
 
     print(f"Sending request to {addr}")
 
-    data = json.dumps({"name": name, "cmd": cmd})
-    socket.send_string(data)
+    data = {
+        "name": name,
+        "cmd": cmd,
+    }
+    if resource is not None:
+        data["resource"] = resource
+
+    socket.send_string(json.dumps(data))
     message = socket.recv()
     print(f"Receive: {message.decode('utf-8')}")
 

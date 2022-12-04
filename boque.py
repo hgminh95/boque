@@ -4,29 +4,67 @@ import os
 import json
 import zmq
 import time
+import re
 
+
+
+class Resource():
+    def acquire(self):
+        raise NotImplementedError()
+
+
+class CudaDeviceResource(Resource):
+    def __init__(self):
+        pass
+
+    def acquire(self):
+        # Sleep for 30s to make sure other process already require
+        time.sleep(30)
+        num_devices = subprocess.check_output(
+                "nvidia-smi --query-gpu=name --format=csv,noheader | wc -l",
+                shell=True)
+        num_devices = int(num_devices)
+
+        for i in range(num_devices):
+            utilization = subprocess.check_output(
+                    f"nvidia-smi -i {i} -a | grep -A 4 Utilization",
+                    shell=True)
+
+            lines = utilization.split("\n")
+            if len(lines) < 5:
+                continue
+
+            gpu_util = int(re.split(":|%", line[1])[1])
+            memory_util = int(re.split(":|%", line[2])[1])
+
+            if gpu_util < 10 and memory_util < 10:
+                return i
+
+        return None
 
 class Task():
-    def __init__(self, name, cmd):
+    def __init__(self, name, cmd, resource=None):
         self.name = name
         self.cmd = cmd
         self.p = None
+        self.resource = resource
 
     @staticmethod
     def from_json(data):
-        return Task(name=data["name"], cmd=data["cmd"])
+        return Task(name=data["name"], cmd=data["cmd"], resource=data.get("resource", None))
 
 
 class ShellExecutor():
     def __init__(self, log_folder):
         self._log_folder = log_folder
 
-    def execute(self, task):
+    def execute(self, task, resources):
         if task.p is None:
             # TODO: is there a leak here?
             output = open(f"{self._log_folder}/{task.name}", "w")
             task.p = subprocess.Popen(
-                task.cmd, shell=True, stdout=output, stderr=subprocess.STDOUT,
+                task.cmd.format(**resources),
+                shell=True, stdout=output, stderr=subprocess.STDOUT,
                 executable='/bin/bash',
             )
         else:
@@ -43,6 +81,8 @@ class Scheduler():
         self._pending_tasks = []
         self._running_tasks = []
         self._task_names = set()
+
+        self._cuda_devices = CudaDeviceResource()
 
         self._pending_task_cnt = 0
         self._finished_task_cnt = 0
@@ -77,8 +117,22 @@ class Scheduler():
             return
 
         task = self._pending_tasks.pop()
+        resources = {}
+
+        if task.resource == "cuda_device":
+            cuda_device = self._cuda_device.acquire()
+            if cuda_device is None:
+                self._pending_tasks.append(task)
+                return
+            resources["cuda_device"] = cuda_device
+        elif task.resource == None:
+            pass
+        else:
+            print(f"Unknown resource {task.resource}")
+            return
+
         print(f"Execute task {task.name}")
-        self._executor.execute(task)
+        self._executor.execute(task, resources)
         self._running_tasks.append(task)
 
     def print_stats(self):
